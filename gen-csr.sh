@@ -17,6 +17,8 @@
 #    with this program; if not, write to the Free Software Foundation, Inc.,
 #    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+OPENSSL_CONFIG_TEMPLATE=${OPENSSL_CONFIG_TEMPLATE:-/etc/ssl/openssl.cnf}
+
 # temporary files to store input/output of curl or openssl
 
 trap 'rm -f "$OPENSSL_CONFIG" "$OPENSSL_IN" "$OPENSSL_OUT" "$OPENSSL_ERR"' 0 2 3 9 11 13 15
@@ -95,14 +97,14 @@ gen_csr_with_private_key() {
         shift
     done
 
-    cat /etc/ssl/openssl.cnf > "$OPENSSL_CONFIG"
+    cat "$OPENSSL_CONFIG_TEMPLATE" > "$OPENSSL_CONFIG"
     echo '[SAN]' >> "$OPENSSL_CONFIG"
     echo "$ALT_NAME" >> "$OPENSSL_CONFIG"
 
-    openssl req -new -sha512 -key "$SERVER_KEY" -subj / -reqexts SAN -config $OPENSSL_CONFIG \
+    openssl req -new -sha512 -key "$SERVER_KEY" -subj / -reqexts SAN -config "$OPENSSL_CONFIG" \
         > "$OPENSSL_OUT" \
         2> "$OPENSSL_ERR"
-    handle_openssl_exit $? "creating certifacte request"
+    handle_openssl_exit $? "creating certificate request"
 }
 
 usage() {
@@ -147,10 +149,10 @@ fi
 
 while [ -n "$1" ]; do
     DOMAIN="$1"
-    if validate_domain "$DOMAIN"; then true; else
-        echo invalid domain: $DOMAIN > /dev/stderr
-        exit 1
-    fi
+    #if validate_domain "$DOMAIN"; then true; else
+    #    echo invalid domain: $DOMAIN > /dev/stderr
+    #    exit 1
+    #fi
     DOMAINS="$DOMAINS $DOMAIN"
     shift
 done

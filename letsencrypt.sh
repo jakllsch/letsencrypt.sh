@@ -17,6 +17,8 @@
 #    with this program; if not, write to the Free Software Foundation, Inc.,
 #    51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+OPENSSL_CONFIG_TEMPLATE=${OPENSSL_CONFIG_TEMPLATE:-/etc/ssl/openssl.cnf}
+
 # temporary files to store input/output of curl or openssl
 
 trap 'rm -f "$RESP_HEADER" "$RESP_BODY" "$LAST_NONCE" "$LAST_NONCE_FETCH" "$OPENSSL_CONFIG" "$OPENSSL_IN" "$OPENSSL_OUT" "$OPENSSL_ERR" "$TMP_SERVER_CSR"' 0 2 3 9 11 13 15
@@ -185,8 +187,8 @@ show_error() {
         echo "error while $1" > /dev/stderr
     fi
 
-    ERR_TYPE="`sed -e 's/.*"type":"\([^"]*\)".*/\1/' "$RESP_BODY"`"
-    ERR_DETAILS="`sed -e 's/.*"detail":"\([^"]*\)".*/\1/' "$RESP_BODY"`"
+    ERR_TYPE="`jq -r '.type' < "$RESP_BODY"`"
+    ERR_DETAILS="`jq -r '.detail' < "$RESP_BODY"`"
 
     echo "  $ERR_DETAILS ($ERR_TYPE)" > /dev/stderr
 }
@@ -240,8 +242,7 @@ key_get_exponent(){
     openssl pkey -inform perm -in "$1" -noout -text_pub > "$OPENSSL_OUT" 2> "$OPENSSL_ERR"
     handle_openssl_exit $? "extracting account key exponent"
 
-    sed -e '/Exponent: / ! d; s/Exponent: [0-9]*\s\+(\(\(0\)x\([0-9]\)\|0x\)\(\([0-9][0-9]\)*\))/\2\3\4/' \
-        < "$OPENSSL_OUT" \
+    printf '%06x' `sed -e '/^Exponent: / ! d; s/Exponent: \([0-9]*\) .*/\1/' < "$OPENSSL_OUT"` \
         | xxd -r -p \
         | base64url
 }
@@ -258,6 +259,9 @@ send_req(){
     gen_signature
 
     DATA='{"header":'"$REQ_JWKS"',"protected":"'"$PROTECTED"'","payload":"'"$PAYLOAD"'","signature":"'"$SIGNATURE"'"}'
+
+    echo sr uri "$URI"
+    echo sr data "$DATA"
 
     curl -s -d "$DATA" -D "$RESP_HEADER" -o "$RESP_BODY" "$URI"
     handle_curl_exit $? "$URI"
@@ -283,7 +287,7 @@ load_account_key(){
 register_account_key(){
     log "register account"
 
-    NEW_REG='{"resource":"new-reg","contact":["mailto:'"$ACCOUNT_EMAIL"'"],"agreement":"https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf"}'
+    NEW_REG='{"resource":"new-reg","contact":["mailto:'"$ACCOUNT_EMAIL"'"],"agreement":"https://letsencrypt.org/documents/LE-SA-v1.1.1-August-1-2016.pdf"}'
     send_req "$CA/acme/new-reg" "$NEW_REG"
 
     if check_http_status 201; then
@@ -307,9 +311,11 @@ request_challenge_domain(){
     send_req "$CA/acme/new-authz" "$NEW_AUTHZ"
 
     if check_http_status 201; then
-        DOMAIN_CHALLENGE="`sed -e '/"http-01"/ ! d; s/.*{\([^}]*"type":"http-01"[^}]*\)}.*/\1/' "$RESP_BODY"`"
-        DOMAIN_TOKEN="`echo "$DOMAIN_CHALLENGE" | sed 's/.*"token":"\([^"]*\)".*/\1/'`"
-        DOMAIN_URI="`echo "$DOMAIN_CHALLENGE" | sed 's/.*"uri":"\([^"]*\)".*/\1/'`"
+        DOMAIN_TOKEN="`jq -r '.challenges[]|select(.type == "http-01").token' < "$RESP_BODY"`"
+        DOMAIN_URI="`jq -r '.challenges[]|select(.type == "http-01").uri' < "$RESP_BODY"`"
+
+	echo rcd DU "$DOMAIN_URI"
+	echo rcd DT "$DOMAIN_TOKEN"
 
         DOMAIN_DATA="$DOMAIN_DATA $DOMAIN $DOMAIN_URI $DOMAIN_TOKEN"
     elif check_http_status 400; then
@@ -399,6 +405,8 @@ request_verification() {
     
         shift 3
 
+	echo $DOMAIN_URI
+	echo $DOMAIN_TOKEN
         request_domain_verification
     done
 }
@@ -425,7 +433,7 @@ check_verification() {
             handle_curl_exit $? "$DOMAIN_URI"
         
             if check_http_status 202; then
-                DOMAIN_STATUS="`sed -e 's/.*"status":"\(invalid\|valid\|pending\)".*/\1/' "$RESP_BODY"`"
+                DOMAIN_STATUS="`jq -r '.status' < "$RESP_BODY"`"
                 case "$DOMAIN_STATUS" in
                     valid)
                         log $DOMAIN is valid
@@ -470,7 +478,7 @@ gen_csr_with_private_key() {
         shift
     done
 
-    cat /etc/ssl/openssl.cnf > "$OPENSSL_CONFIG"
+    cat "$OPENSSL_CONFIG_TEMPLATE" > "$OPENSSL_CONFIG"
     echo '[SAN]' >> "$OPENSSL_CONFIG"
     echo "$ALT_NAME" >> "$OPENSSL_CONFIG"
 
@@ -484,11 +492,12 @@ gen_csr_with_private_key() {
 csr_extract_domains() {
     log "extract domains from certificate signing request"
 
-    openssl req -in "$TMP_SERVER_CSR" -noout -text \
+    openssl req -in "$TMP_SERVER_CSR" -noout -text -config /dev/null \
         > "$OPENSSL_OUT" \
         2> "$OPENSSL_ERR"
     handle_openssl_exit $? "reading certifacte signing request"
 
+    #DOMAINS="`sed -n '/\s*Subject: CN=/ { s/.*=\(.*\)/\1/; p }' "$OPENSSL_OUT"`"
     DOMAINS="`sed -n '/X509v3 Subject Alternative Name:/ { n; s/^\s*DNS\s*:\s*//; s/\s*,\s*DNS\s*:\s*/ /g; p; q; }' "$OPENSSL_OUT"`"
 }
 
@@ -645,7 +654,7 @@ esac
 
 while [ "$#" -gt 0 ]; do
     DOMAIN="$1"
-    validate_domain "$DOMAIN" || die "invalid domain: $DOMAIN"
+    #validate_domain "$DOMAIN" || die "invalid domain: $DOMAIN"
     DOMAINS="$DOMAINS $DOMAIN"
     shift
 done
